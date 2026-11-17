@@ -50,6 +50,15 @@ async def close_mongo():
         log.info("Closed MongoDB connection.")
 
 
+async def save_trade(trade_doc: Dict[str, Any]):
+    if db_manager.db is not None:
+        try:
+            await db_manager.db.trades.insert_one(trade_doc)
+            log.info("Trade entry stored in MongoDB successfully.")
+        except Exception as e:
+            log.error("Failed to save trade to MongoDB: %s", e)
+
+
 async def save_trade_exit(filter_query: Dict[str, Any], exit_doc: Dict[str, Any]):
     if db_manager.db is not None:
         try:
