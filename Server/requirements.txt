@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pandas
+numpy
+requests
+python-dotenv
+pymongo
+motor
+dnspython

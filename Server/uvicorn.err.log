@@ -1,0 +1,12 @@
+2026-09-27 11:17:37,521 INFO Seeded demo bot b94e68f5 BTCUSDT long
+2026-09-27 11:17:38,334 WARNING seed failed APIError(code=-1013): Filter failure: LOT_SIZE
+INFO:     Started server process [12984]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:64522 - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:60896 - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56796 - "WebSocket /ws" [accepted]
+INFO:     connection open

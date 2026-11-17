@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: complete-trade-auto-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r Server/requirements.txt
+    startCommand: uvicorn Server.app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DELTA_ENV
+        value: production
+      - key: LIVE_TRADING
+        value: "true"
+      - key: PAPER_MODE
+        value: "false"
+      - key: TRADING_SYMBOL
+        value: 1000SATSUSD
+      - key: MONGODB_URI
+        sync: false
+      - key: DELTA_API_KEY
+        sync: false
+      - key: DELTA_API_SECRET
+        sync: false
