@@ -25,6 +25,7 @@ engine = SingleBotEngine(config, client)
 _ws_clients: list[WebSocket] = []
 engine_task: asyncio.Task | None = None
 recent_trades_log: list[dict] = []
+last_decision_diagnostic: dict = {}
 
 
 async def engine_loop():
@@ -39,6 +40,10 @@ async def engine_loop():
             try:
                 cycle_result = engine.run_cycle()
                 log.info("Engine cycle result: %s", cycle_result)
+
+                global last_decision_diagnostic
+                last_decision_diagnostic = cycle_result.get("diagnostic", {})
+
                 if "trade" in cycle_result:
                     trade_doc = {
                         "botId": "btc-single-bot",
@@ -120,6 +125,58 @@ app.add_middleware(CORSMiddleware,
 )
 
 
+@app.get("/debug/last-decision")
+def get_last_decision():
+    """Returns decision diagnostics for the latest engine cycle."""
+    return last_decision_diagnostic if last_decision_diagnostic else {"status": "no_cycle_run_yet"}
+
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_policy():
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Privacy Policy - Complete Trade Auto</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 40px auto; padding: 0 20px; background: #f9fafb; }
+            .container { background: #fff; padding: 40px; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+            h1 { font-size: 28px; margin-bottom: 8px; color: #111; }
+            h2 { font-size: 18px; margin-top: 24px; color: #1f2937; }
+            p, li { font-size: 14px; color: #4b5563; }
+            .date { font-size: 12px; color: #9ca3af; margin-bottom: 24px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Privacy Policy</h1>
+            <div class="date">Last updated: November 18, 2026</div>
+            <p>Welcome to <strong>Complete Trade Auto</strong> ("we", "our", or "us"). We respect your privacy and are committed to protecting your personal data. This privacy policy informs you how we handle your information when you use our automated Bitcoin trading platform and Instagram/WhatsApp notification services.</p>
+
+            <h2>1. Information We Collect</h2>
+            <p>When you connect your Meta / Instagram account or use our trading dashboard, we may collect basic profile information such as your user ID, username, and messages sent through the Instagram Messaging API strictly for the purpose of sending automated trade execution alerts, market regime analysis, and PnL summaries to you.</p>
+
+            <h2>2. How We Use Your Information</h2>
+            <p>We use the collected information solely to:</p>
+            <ul>
+                <li>Deliver real-time trade signals, entry/exit notifications, and equity updates via Instagram Direct Message.</li>
+                <li>Maintain and secure the automated trading engine operations.</li>
+            </ul>
+
+            <h2>3. Data Security & Sharing</h2>
+            <p>We implement robust security measures to protect your credentials and data. We do not sell, trade, or otherwise transfer your personal information to outside parties. All API keys and tokens are encrypted and stored securely.</p>
+
+            <h2>4. Contact Us</h2>
+            <p>If you have any questions regarding this Privacy Policy, please reach out via our GitHub repository or support channel.</p>
+        </div>
+    </body>
+    </html>
+    """
+
 @app.get("/health")
 def health():
     return {
@@ -137,6 +194,15 @@ def health():
 def get_status():
     position = engine.execution.reconcile_position(engine.btc_product_id) if engine.btc_product_id else None
     passed, gate_reason = engine.risk_manager.check_gates()
+
+    # Try fetching live wallet balance for frontend display
+    wallet_balances = []
+    try:
+        if not config.paper_mode and config.delta.api_key:
+            wallet_balances = client.get_wallet_balances()
+    except Exception:
+        pass
+
     return {
         "equity": engine.risk_manager.equity,
         "starting_equity": engine.risk_manager.starting_equity,
@@ -149,6 +215,7 @@ def get_status():
         "position": position,
         "paper_mode": config.paper_mode,
         "is_running": engine.is_running,
+        "wallet_balances": wallet_balances,
     }
 
 
@@ -284,14 +351,52 @@ def stop_all():
     return {"success": True, "message": "Engine halted and risk kill switch activated."}
 
 
+@app.post("/test-entry")
+def test_entry():
+    """Manually test a simulated entry trade cycle."""
+    try:
+        if engine.btc_product_id is None:
+            engine.initialize()
+        df_15m = client.get_candles(symbol=engine.btc_symbol, resolution="15m", limit=200)
+        df_1h = client.get_candles(symbol=engine.btc_symbol, resolution="1h", limit=100)
+        if df_15m.empty:
+            return {"success": False, "error": "Empty candles"}
+        price = float(df_15m["close"].iloc[-1])
+        from app.indicators import atr
+        atr_val = float(atr(df_15m, 14).iloc[-1])
+
+        contracts, sl, tp = engine.risk_manager.calculate_position_size(price, atr_val, engine.risk_manager.equity)
+        import time
+        trade_doc = {
+            "botId": "btc-single-bot",
+            "symbol": engine.btc_symbol,
+            "side": "long",
+            "entry_price": price,
+            "stop_loss": sl,
+            "take_profit": tp,
+            "qty": contracts * 0.001,
+            "event": "TEST_ENTRY",
+            "status": "OPEN",
+            "ts": int(time.time())
+        }
+        recent_trades_log.insert(0, trade_doc)
+        return {"success": True, "trade": trade_doc}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
-    await ws.accept()
-    _ws_clients.append(ws)
-    await ws.send_json({"type": "init", "status": get_status(), "symbols": [engine.btc_symbol]})
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    _ws_clients.append(websocket)
     try:
         while True:
-            await ws.receive_text()
+            data = await websocket.receive_text()
+            # Echo or handle incoming ws messages
+            await websocket.send_json({"type": "ack", "message": data})
     except WebSocketDisconnect:
-        if ws in _ws_clients:
-            _ws_clients.remove(ws)
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)
+    except Exception:
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)

@@ -1,4 +1,4 @@
-const BASE = import.meta.env.VITE_API_BASE || 'https://complete-trade-auto-vinith.onrender.com'
+const BASE = import.meta.env.VITE_API_BASE || (typeof window !== 'undefined' && window.location.hostname === 'localhost' ? 'http://localhost:8000' : 'https://complete-trade-auto-vinith.onrender.com')
 export const API = BASE.replace(/\/$/, '')
 
 export async function fetchJSON(path){

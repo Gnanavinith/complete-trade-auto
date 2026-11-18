@@ -1,5 +1,5 @@
 """
-Backtester for the single-bot BTC strategy on Delta historical candles, using Aggregator.
+Backtest Script: Runs the SingleBotEngine over historical candles and outputs evaluation metrics.
 """
 import pandas as pd
 import numpy as np
@@ -23,8 +23,6 @@ class Backtester:
         self.taker_fee_pct = taker_fee_pct
         self.slippage_pct = slippage_pct
         self.risk_manager = RiskManager(RiskConfig(), initial_equity=initial_equity)
-
-        # Aggregator combining Trend & Range strategies
         self.aggregator = Aggregator([TrendEmaStrategy(), RangeRsiBbStrategy()], weights=[1.0, 1.0])
 
     def run(self) -> Dict[str, Any]:
@@ -36,7 +34,12 @@ class Backtester:
         warmup = 50
         n = len(self.df_15m)
 
+        cycles_evaluated = 0
+        flat_reasons_count: Dict[str, int] = {}
+        trades_taken = 0
+
         for i in range(warmup, n):
+            cycles_evaluated += 1
             current_bar = self.df_15m.iloc[:i+1]
             price = float(current_bar["close"].iloc[-1])
             atr_val = float(atr(current_bar, 14).iloc[-1])
@@ -97,35 +100,54 @@ class Backtester:
 
             # 2. Check gates & open new position if FLAT via Aggregator decision
             if position is None:
-                passed, _ = self.risk_manager.check_gates()
-                if passed:
-                    action, score, regime = self.aggregator.decide(current_bar, self.df_1h)
-                    if action == "long":
+                passed, gate_reason = self.risk_manager.check_gates()
+                if not passed:
+                    r_key = f"Gate Blocked: {gate_reason}"
+                    flat_reasons_count[r_key] = flat_reasons_count.get(r_key, 0) + 1
+                else:
+                    # Slice 1h dataframe up to current timestamp if available
+                    df_1h_slice = None
+                    if self.df_1h is not None and not self.df_1h.empty and "time" in self.df_1h.columns:
+                        df_1h_slice = self.df_1h[self.df_1h["time"] <= timestamp]
+                        if df_1h_slice.empty:
+                            df_1h_slice = self.df_1h.iloc[:50] # fallback
+
+                    action, score, regime = self.aggregator.decide(current_bar, df_1h_slice)
+                    if action == "flat":
+                        if regime.value in ("CHAOS", "UNKNOWN"):
+                            r_key = f"Regime: {regime.value}"
+                        elif abs(score) < 0.6:
+                            r_key = f"Score Threshold Unmet ({score:.2f})"
+                        else:
+                            r_key = "HTF Trend / Veto Filter"
+                        flat_reasons_count[r_key] = flat_reasons_count.get(r_key, 0) + 1
+                    else:
+                        trades_taken += 1
                         contracts, sl, tp = self.risk_manager.calculate_position_size(price, atr_val, equity)
-                        entry_price = price * (1 + self.slippage_pct)
-                        position = {
-                            "side": "long",
-                            "entry_price": entry_price,
-                            "stop_loss": sl,
-                            "take_profit": tp,
-                            "contracts": contracts,
-                            "entry_time": timestamp,
-                        }
-                    elif action == "short":
-                        contracts, sl, tp = self.risk_manager.calculate_position_size(price, atr_val, equity)
-                        sl_dist = sl - price
-                        tp_dist = price - tp
-                        sl = price + sl_dist
-                        tp = price - tp_dist
-                        entry_price = price * (1 - self.slippage_pct)
-                        position = {
-                            "side": "short",
-                            "entry_price": entry_price,
-                            "stop_loss": sl,
-                            "take_profit": tp,
-                            "contracts": contracts,
-                            "entry_time": timestamp,
-                        }
+                        if action == "long":
+                            entry_price = price * (1 + self.slippage_pct)
+                            position = {
+                                "side": "long",
+                                "entry_price": entry_price,
+                                "stop_loss": sl,
+                                "take_profit": tp,
+                                "contracts": contracts,
+                                "entry_time": timestamp,
+                            }
+                        elif action == "short":
+                            sl_dist = sl - price
+                            tp_dist = price - tp
+                            sl = price + sl_dist
+                            tp = price - tp_dist
+                            entry_price = price * (1 - self.slippage_pct)
+                            position = {
+                                "side": "short",
+                                "entry_price": entry_price,
+                                "stop_loss": sl,
+                                "take_profit": tp,
+                                "contracts": contracts,
+                                "entry_time": timestamp,
+                            }
 
             equity_curve.append(equity)
 
@@ -148,6 +170,9 @@ class Backtester:
                 max_dd = dd
 
         return {
+            "cycles_evaluated": cycles_evaluated,
+            "flat_reasons_count": flat_reasons_count,
+            "trades_taken": trades_taken,
             "initial_equity": self.initial_equity,
             "final_equity": round(equity, 2),
             "net_pnl": round(net_pnl, 2),
