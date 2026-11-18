@@ -20,11 +20,16 @@ class InstagramNotifier:
         return bool(self.access_token and self.ig_user_id)
 
     def send_message(self, text: str) -> bool:
-        if not self.is_configured():
-            log.warning("Instagram credentials not fully configured. Skipping DM notification.")
-            return False
+        success, _ = self.send_message_detailed(text)
+        return success
 
-        recipient = self.recipient_id if self.recipient_id and self.recipient_id != "your_recipient_ig_scoped_user_id" else self.ig_user_id
+    def send_message_detailed(self, text: str) -> tuple[bool, str]:
+        if not self.is_configured():
+            msg = "Instagram credentials not fully configured (missing access token or user ID)."
+            log.warning(msg)
+            return False, msg
+
+        recipient = self.recipient_id if (self.recipient_id and self.recipient_id != "your_recipient_ig_scoped_user_id") else "1440272061051862"
 
         headers = {
             "Authorization": f"Bearer {self.access_token}",
@@ -33,19 +38,35 @@ class InstagramNotifier:
         payload = {
             "recipient": {"id": recipient},
             "message": {"text": text},
-            "messaging_type": "RESPONSE"
+            "messaging_type": "RESPONSE",
         }
 
         try:
             response = requests.post(self.api_url, json=payload, headers=headers, timeout=10)
             if response.status_code >= 400:
-                log.error("Failed to send Instagram DM [%d]: %s", response.status_code, response.text)
-                return False
-            log.info("Instagram DM notification sent successfully.")
-            return True
+                err_text = response.text
+                try:
+                    err_json = response.json()
+                    err_msg = err_json.get("error", {}).get("message", response.text)
+                    subcode = err_json.get("error", {}).get("error_subcode", "")
+                    if subcode == 2534022 or "outside of allowed window" in err_msg.lower():
+                        err_text = (
+                            f"Meta 24h Window Expired: The recipient (ID: {recipient}) has not sent a DM to "
+                            f"the business account within the last 24 hours. Send a DM to @tanglome from Instagram first."
+                        )
+                    else:
+                        err_text = f"[{response.status_code}] {err_msg}"
+                except Exception:
+                    pass
+
+                log.error("Failed to send Instagram DM [%d]: %s", response.status_code, err_text)
+                return False, err_text
+
+            log.info("Instagram DM notification sent successfully to %s.", recipient)
+            return True, "Message sent successfully"
         except Exception as e:
             log.error("Exception sending Instagram DM: %s", e)
-            return False
+            return False, str(e)
 
     def notify_analysis(self, symbol: str, regime: str, score: float, price: float, rsi_val: float, adx_val: float) -> bool:
         text = (

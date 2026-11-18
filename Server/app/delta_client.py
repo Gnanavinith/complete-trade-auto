@@ -9,8 +9,11 @@ import json
 import logging
 import requests
 import pandas as pd
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlencode
+
+import urllib3.util.connection as urllib3_cn
+urllib3_cn.HAS_IPV6 = False   # force IPv4 only: stops Delta 401 from rotating home IPv6
 
 from app.config import DeltaConfig, config
 
@@ -23,6 +26,13 @@ class DeltaAPIError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.response_body = response_body
+
+
+class DeltaAuthError(DeltaAPIError):
+    """Delta API authentication failure (e.g. IP not whitelisted for the API key)."""
+    def __init__(self, message: str, status_code: Optional[int] = None, response_body: Optional[Any] = None, client_ip: Optional[str] = None):
+        super().__init__(message, status_code=status_code, response_body=response_body)
+        self.client_ip = client_ip
 
 
 class DeltaClient:
@@ -38,6 +48,18 @@ class DeltaClient:
         })
         self._btc_product_id: Optional[int] = None
         self._btc_symbol: str = "BTCUSD"
+
+        # IP-whitelist / auth failure handling
+        # -------------------------------------------------------------------
+        # On an auth error we halt the engine via on_auth_failure, log the
+        # client_ip once, and refuse to retry authenticated calls for a
+        # cool-down window so the same error cannot spam the log several
+        # times a second.
+        self.on_auth_failure = None                      # type: Optional[Callable[[str], None]]
+        self._auth_failed = False
+        self._auth_fail_time = 0.0
+        self._auth_client_ip: Optional[str] = None
+        self.AUTH_RETRY_MIN_INTERVAL = 60.0              # seconds between auth retries
 
     def _generate_signature(self, method: str, path: str, query_string: str = "", payload: str = "", timestamp: str = "") -> str:
         """
@@ -79,6 +101,20 @@ class DeltaClient:
                 "signature": signature,
             })
 
+        # If we recently hit an auth failure, skip authenticated retries until
+        # the cool-down elapses. This stops the same 401 from looping and
+        # guarantees we retry at most once every AUTH_RETRY_MIN_INTERVAL seconds.
+        if auth and self._auth_failed:
+            elapsed = time.time() - self._auth_fail_time
+            if elapsed < self.AUTH_RETRY_MIN_INTERVAL:
+                remaining = int(self.AUTH_RETRY_MIN_INTERVAL - elapsed)
+                raise DeltaAuthError(
+                    f"Delta API auth failed (client_ip={self._auth_client_ip or 'unknown'}). "
+                    f"Skipping authenticated request; next retry in {remaining}s.",
+                    status_code=401,
+                    client_ip=self._auth_client_ip,
+                )
+
         max_retries = 3
         backoff = 1.0
 
@@ -102,17 +138,48 @@ class DeltaClient:
                     continue
 
                 if response.status_code >= 400:
-                    try:
-                        err_json = response.json()
-                        err_msg = err_json.get("error", {}).get("message", response.text)
-                    except Exception:
-                        err_msg = response.text
+                    err_msg, err_code, client_ip = self._parse_delta_error(response)
 
-                    if "ip" in err_msg.lower() or "whitelist" in err_msg.lower():
-                        log.error("IP Whitelist error from Delta Exchange: %s", err_msg)
+                    is_auth_error = (
+                        response.status_code == 401
+                        or "ip_not_whitelisted_for_api_key" in f"{err_code} {err_msg}".lower()
+                        or ("ip" in err_msg.lower() and "whitelist" in err_msg.lower())
+                    )
+
+                    if is_auth_error:
+                        now = time.time()
+                        # React (halt engine + log) at most once per cool-down window.
+                        if not self._auth_failed or (now - self._auth_fail_time) >= self.AUTH_RETRY_MIN_INTERVAL:
+                            self._auth_failed = True
+                            self._auth_fail_time = now
+                            self._auth_client_ip = client_ip
+                            ip_str = client_ip or "unknown"
+                            log.error(
+                                "Delta API auth failed: %s (status=%s, client_ip=%s). "
+                                "Engine will be HALTED. Whitelist IP %s on Delta and restart. "
+                                "Also confirm DELTA_ENV matches the key (testnet vs production).",
+                                err_msg, response.status_code, ip_str, ip_str,
+                            )
+                            if self.on_auth_failure:
+                                try:
+                                    self.on_auth_failure(ip_str)
+                                except Exception as cb_exc:
+                                    log.error("Auth failure callback raised: %s", cb_exc)
+                        else:
+                            log.debug(
+                                "Suppressed repeat Delta auth error (rate-limited): %s (client_ip=%s)",
+                                err_msg, client_ip or "unknown",
+                            )
+                        raise DeltaAuthError(
+                            f"Delta API auth error [{response.status_code}]: {err_msg}",
+                            status_code=response.status_code,
+                            response_body=response.text,
+                            client_ip=client_ip,
+                        )
+
+                    # Non-auth errors (e.g. 429 handled above, other 4xx/5xx).
                     if "signature" in err_msg.lower() or "expired" in err_msg.lower():
                         log.error("Signature / Timestamp expired error. Check system clock sync: %s", err_msg)
-
                     raise DeltaAPIError(f"Delta API error [{response.status_code}]: {err_msg}", status_code=response.status_code, response_body=response.text)
 
                 if response.content:
@@ -128,6 +195,48 @@ class DeltaClient:
                     raise DeltaAPIError(f"Delta request failed after {max_retries} attempts: {e}")
                 time.sleep(backoff)
                 backoff *= 2
+
+    @staticmethod
+    def _parse_delta_error(response) -> tuple[str, str, Optional[str]]:
+        """Extract (message, code, client_ip) from a Delta error response."""
+        try:
+            err_json = response.json()
+            err_obj = err_json.get("error", {}) if isinstance(err_json, dict) else {}
+            if isinstance(err_obj, dict):
+                err_code = err_obj.get("code", "") or ""
+                err_msg = err_obj.get("message") or err_code or getattr(response, "text", "")
+                ctx = err_obj.get("context") if isinstance(err_obj.get("context"), dict) else {}
+                root_ctx = err_json.get("context") if isinstance(err_json.get("context"), dict) else {}
+                client_ip = (
+                    err_obj.get("client_ip")
+                    or err_obj.get("ip")
+                    or ctx.get("client_ip")
+                    or ctx.get("ip")
+                    or root_ctx.get("client_ip")
+                    or err_json.get("client_ip")
+                    or response.headers.get("X-Client-Ip")
+                    or response.headers.get("CF-Connecting-IP")
+                )
+            else:
+                err_msg = str(err_json)
+                err_code = ""
+                client_ip = None
+
+            if not client_ip and hasattr(response, "text") and response.text:
+                import re
+                match = re.search(r'"client_ip"\s*:\s*"([^"]+)"', response.text)
+                if match:
+                    client_ip = match.group(1)
+
+            return str(err_msg), str(err_code), client_ip
+        except Exception:
+            client_ip = None
+            if hasattr(response, "text") and response.text:
+                import re
+                match = re.search(r'"client_ip"\s*:\s*"([^"]+)"', response.text)
+                if match:
+                    client_ip = match.group(1)
+            return getattr(response, "text", ""), "", client_ip
 
     # --- Public Market Data Endpoints ---
 

@@ -2,6 +2,14 @@
 Main FastAPI application for Single-Bot BTC Automated Trading System on Delta Exchange India.
 Includes full backwards compatibility endpoints for the React dashboard.
 """
+import os
+import sys
+
+# Ensure 'Server' root is in sys.path regardless of execution directory
+_server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _server_dir not in sys.path:
+    sys.path.insert(0, _server_dir)
+
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -21,6 +29,22 @@ log = logging.getLogger("main")
 
 client = make_delta_client(config.delta)
 engine = SingleBotEngine(config, client)
+
+
+def _on_delta_auth_failure(client_ip: str) -> None:
+    """Halt the engine when Delta rejects the API key (IP not whitelisted, 401, etc.)."""
+    engine.risk_manager.is_halted = True
+    engine.risk_manager.halt_reason = f"API auth failed: whitelist IP {client_ip}"
+    log.critical("Delta API auth failed. Engine HALTED. Whitelist IP %s on Delta and restart the server.", client_ip)
+
+
+client.on_auth_failure = _on_delta_auth_failure
+log.info(
+    "Delta env=%s base_url=%s paper_mode=%s (confirm DELTA_ENV matches the key: testnet vs production)",
+    config.delta.env,
+    config.delta.base_url,
+    config.paper_mode,
+)
 
 _ws_clients: list[WebSocket] = []
 engine_task: asyncio.Task | None = None
@@ -223,9 +247,11 @@ def get_status():
 def start_engine():
     """Start the trading engine loop."""
     engine.is_running = True
-    if engine.risk_manager.is_halted and "STOP ALL" in engine.risk_manager.halt_reason:
+    if engine.risk_manager.is_halted and ("STOP ALL" in engine.risk_manager.halt_reason or "API auth failed" in engine.risk_manager.halt_reason):
         engine.risk_manager.is_halted = False
         engine.risk_manager.halt_reason = ""
+        client._auth_failed = False
+        client._auth_fail_time = 0.0
     log.info("Engine started by user request.")
     return {"success": True, "is_running": True, "message": "Trading engine started."}
 
@@ -381,6 +407,91 @@ def test_entry():
         }
         recent_trades_log.insert(0, trade_doc)
         return {"success": True, "trade": trade_doc}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/test-instagram")
+def test_instagram(message: str = "Complete Trade Auto: Test alert notification"):
+    """Test Instagram Direct Message notification."""
+    from app.instagram import instagram_notifier
+    success, detail = instagram_notifier.send_message_detailed(message)
+    return {
+        "success": success,
+        "detail": detail,
+        "recipient_id": instagram_notifier.recipient_id,
+        "account_id": instagram_notifier.ig_user_id
+    }
+
+
+@app.get("/ai-analysis")
+def get_ai_analysis():
+    """Returns the latest Google Gemini market intelligence analysis."""
+    from app.ai_analyst import ai_analyst
+    if ai_analyst.latest_analysis:
+        return {"success": True, "analysis": ai_analyst.latest_analysis}
+
+    try:
+        df_15m = client.get_candles(symbol=engine.btc_symbol, resolution="15m", limit=50)
+        price = float(df_15m["close"].iloc[-1]) if not df_15m.empty else 65000.0
+        from app.indicators import rsi, adx, ema
+        rsi_val = float(rsi(df_15m["close"], 14).iloc[-1]) if not df_15m.empty else 50.0
+        adx_val = float(adx(df_15m, 14).iloc[-1]) if not df_15m.empty else 25.0
+        ema9 = float(ema(df_15m["close"], 9).iloc[-1]) if not df_15m.empty else price
+        ema21 = float(ema(df_15m["close"], 21).iloc[-1]) if not df_15m.empty else price
+        from app.regime import detect_regime
+        regime = detect_regime(df_15m).value if not df_15m.empty else "TREND"
+
+        analysis = ai_analyst.analyze_market(
+            symbol=engine.btc_symbol,
+            price=price,
+            regime=regime,
+            rsi=rsi_val,
+            adx=adx_val,
+            ema_fast=ema9,
+            ema_slow=ema21,
+            trend_1h="BULLISH" if ema9 > ema21 else "BEARISH",
+        )
+        return {"success": True, "analysis": analysis}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/ai-analysis/generate")
+def generate_ai_analysis(send_notifications: bool = False):
+    """Generates fresh Google Gemini market analysis and optionally broadcasts to Instagram."""
+    from app.ai_analyst import ai_analyst
+    try:
+        df_15m = client.get_candles(symbol=engine.btc_symbol, resolution="15m", limit=50)
+        price = float(df_15m["close"].iloc[-1]) if not df_15m.empty else 65000.0
+        from app.indicators import rsi, adx, ema
+        rsi_val = float(rsi(df_15m["close"], 14).iloc[-1]) if not df_15m.empty else 50.0
+        adx_val = float(adx(df_15m, 14).iloc[-1]) if not df_15m.empty else 25.0
+        ema9 = float(ema(df_15m["close"], 9).iloc[-1]) if not df_15m.empty else price
+        ema21 = float(ema(df_15m["close"], 21).iloc[-1]) if not df_15m.empty else price
+        from app.regime import detect_regime
+        regime = detect_regime(df_15m).value if not df_15m.empty else "TREND"
+
+        analysis = ai_analyst.analyze_market(
+            symbol=engine.btc_symbol,
+            price=price,
+            regime=regime,
+            rsi=rsi_val,
+            adx=adx_val,
+            ema_fast=ema9,
+            ema_slow=ema21,
+            trend_1h="BULLISH" if ema9 > ema21 else "BEARISH",
+        )
+
+        dispatch_result = None
+        if send_notifications:
+            dispatch_result = ai_analyst.dispatch_notifications(analysis)
+
+        return {
+            "success": True,
+            "analysis": analysis,
+            "dispatch": dispatch_result
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 

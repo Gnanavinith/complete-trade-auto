@@ -3,81 +3,32 @@ import {
   ResponsiveContainer, AreaChart, Area, LineChart, Line, BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts'
-import { fetchJSON, wsURL, API } from './Api.jsx'
+import {
+  wsURL,
+  getStatus,
+  getConfig,
+  getSymbols,
+  getTrades,
+  runBacktest as apiRunBacktest,
+  startEngine as apiStartEngine,
+  stopEngine as apiStopEngine,
+  stopAll as apiStopAll,
+  testEntry as apiTestEntry,
+} from './Api.jsx'
+import ChartCard from './components/ChartCard.jsx'
+import Select from './components/Select.jsx'
+import FilterBar from './components/FilterBar.jsx'
+import TradingViewChart from './components/TradingViewChart.jsx'
+import AIAnalystCard from './components/AIAnalystCard.jsx'
+import { money, downloadCSV, tapePnl } from './utils/formatters.js'
 
-/* ---------- chart + filter helpers ---------- */
+/* ---------- chart constants ---------- */
 const GREEN = '#1A9E63'
 const RED = '#DC2626'
 const INK = '#1a1a1a'
 const GRID = '#e6e3dc'
 const AXIS = { fontSize: 10, fontFamily: 'monospace', fill: '#8a8578' }
 const TIP = { fontFamily: 'monospace', fontSize: 11, border: '1px solid #e6e3dc', borderRadius: 0 }
-
-const money = (v) => `$${Number(v ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-
-function ChartCard({ title, subtitle, children, empty }) {
-  return (
-    <div className="bg-white border border-[var(--line)] p-5">
-      <div className="mb-3">
-        <h3 className="font-display text-base font-medium">{title}</h3>
-        {subtitle && <p className="font-mono text-[11px] text-[var(--muted)] mt-0.5">{subtitle}</p>}
-      </div>
-      <div className="h-[220px]">
-        {empty ? (
-          <div className="h-full grid place-items-center font-mono text-xs text-[var(--muted)] text-center px-6">{empty}</div>
-        ) : children}
-      </div>
-    </div>
-  )
-}
-
-function Select({ label, value, onChange, options }) {
-  return (
-    <label className="flex flex-col gap-1 font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
-      {label}
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="bg-white border border-[var(--line)] text-[var(--ink)] normal-case tracking-normal text-xs px-2 py-1.5 min-w-[110px]"
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-    </label>
-  )
-}
-
-function FilterBar({ children, shown, total, onClear, onExport }) {
-  return (
-    <div className="flex flex-wrap items-end gap-3 border border-[var(--line)] bg-[var(--paper)] p-3">
-      {children}
-      <div className="ml-auto flex items-center gap-3 font-mono text-[11px] text-[var(--muted)]">
-        <span>Showing {shown} of {total}</span>
-        <button onClick={onClear} className="border border-[var(--line)] bg-white px-2.5 py-1.5 hover:bg-[var(--paper)]">Clear filters</button>
-        <button onClick={onExport} disabled={!shown} className="border border-[var(--line)] bg-white px-2.5 py-1.5 hover:bg-[var(--paper)] disabled:opacity-40">Export CSV</button>
-      </div>
-    </div>
-  )
-}
-
-function downloadCSV(filename, rows) {
-  if (!rows.length) return
-  const cols = Object.keys(rows[0])
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
-  const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\n')
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-const tapePnl = (tr) => {
-  const v = tr.pnl ?? tr.net_pnl ?? tr.unrealized_pnl
-  return v === undefined || v === null ? null : Number(v)
-}
 
 /* ---------- app ---------- */
 export default function App() {
@@ -107,10 +58,10 @@ export default function App() {
   const fetchAll = useCallback(async () => {
     try {
       const [st, c, s, t] = await Promise.all([
-        fetchJSON('/status').catch(() => null),
-        fetchJSON('/config').catch(() => null),
-        fetchJSON('/symbols').catch(() => null),
-        fetchJSON('/trades').catch(() => null),
+        getStatus().catch(() => null),
+        getConfig().catch(() => null),
+        getSymbols().catch(() => null),
+        getTrades().catch(() => null),
       ])
       if (st) setStatus(st)
       if (c) setCfg(c)
@@ -148,7 +99,7 @@ export default function App() {
   const runBacktest = async () => {
     setLoadingBt(true)
     try {
-      const res = await fetchJSON('/backtest')
+      const res = await apiRunBacktest()
       if (res && res.error) alert('Backtest error: ' + res.error)
       else if (res) setBacktest(res)
       else alert('Failed to receive backtest results.')
@@ -156,24 +107,23 @@ export default function App() {
   }
 
   const startEngine = async () => {
-    try { await fetch(`${API}/start`, { method: 'POST' }); fetchAll() } catch (e) { alert(String(e)) }
+    try { await apiStartEngine(); fetchAll() } catch (e) { alert(String(e)) }
   }
   const stopEngine = async () => {
-    try { await fetch(`${API}/stop`, { method: 'POST' }); fetchAll() } catch (e) { alert(String(e)) }
+    try { await apiStopEngine(); fetchAll() } catch (e) { alert(String(e)) }
   }
   const stopAll = async () => {
     try {
-      await fetch(`${API}/stop-all`, { method: 'POST' })
+      await apiStopAll()
       fetchAll()
       alert('Kill switch activated. Engine halted.')
     } catch (e) { alert(String(e)) }
   }
   const testEntry = async () => {
     try {
-      const res = await fetch(`${API}/test-entry`, { method: 'POST' })
-      const data = await res.json()
-      if (data.success) { alert('Test Entry Executed Successfully!'); fetchAll() }
-      else alert('Test Entry Failed: ' + (data.error || 'Unknown error'))
+      const data = await apiTestEntry()
+      if (data && data.success) { alert('Test Entry Executed Successfully!'); fetchAll() }
+      else alert('Test Entry Failed: ' + (data?.error || 'Unknown error'))
     } catch (e) { alert(String(e)) }
   }
 
@@ -260,33 +210,40 @@ export default function App() {
     <div className="min-h-screen bg-[var(--paper)] text-[var(--ink)] font-sans">
       <div className="h-[3px] bg-[var(--brass)]" />
       <header className="bg-white border-b border-[var(--line)] sticky top-0 z-30">
-        <div className="max-w-[1420px] mx-auto px-4 md:px-6 h-[56px] flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-7 h-7 bg-[var(--ink)] text-white grid place-items-center font-mono text-[13px] font-medium">₿</div>
-            <div>
-              <div className="font-display text-[17px] font-medium leading-none tracking-tight">Complete Trade Auto</div>
-              <div className="font-mono text-[10px] tracking-[0.14em] text-[var(--muted)] uppercase -mt-[2px]">BTC Perpetual · Delta Exchange India</div>
+        <div className="max-w-[1420px] mx-auto px-3 sm:px-6 py-2.5 sm:py-0 sm:h-[56px] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5 sm:gap-3">
+              <div className="w-7 h-7 bg-[var(--ink)] text-white grid place-items-center font-mono text-[13px] font-medium shrink-0">₿</div>
+              <div>
+                <div className="font-display text-[15px] sm:text-[17px] font-medium leading-none tracking-tight">Complete Trade Auto</div>
+                <div className="font-mono text-[9px] sm:text-[10px] tracking-[0.12em] text-[var(--muted)] uppercase mt-0.5">BTC Perpetual · Delta Exchange India</div>
+              </div>
+            </div>
+            <div className="flex sm:hidden items-center gap-1.5 font-mono text-[10px]">
+              <span className={`w-2 h-2 rounded-full animate-pulse border ${wsOk ? 'bg-[#1A9E63]' : 'bg-red-500'}`} />
+              <span className="text-[var(--muted)]">{wsOk ? 'Live' : 'Offline'}</span>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="hidden md:flex items-center gap-2 font-mono text-xs">
+
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="hidden sm:flex items-center gap-2 font-mono text-xs mr-2">
               <span className={`w-2 h-2 rounded-full animate-pulse border ${wsOk ? 'bg-[#1A9E63]' : 'bg-red-500'}`} />
               <span>{wsOk ? 'Connected' : 'Disconnected'}</span>
             </div>
             {status?.is_running ? (
-              <button onClick={stopEngine} className="bg-amber-600 text-white font-mono text-[11px] tracking-widest uppercase px-4 py-2 hover:bg-amber-700 transition-colors">STOP ENGINE</button>
+              <button onClick={stopEngine} className="flex-1 sm:flex-none text-center bg-amber-600 text-white font-mono text-[10px] sm:text-[11px] tracking-wider uppercase px-2.5 sm:px-4 py-2 hover:bg-amber-700 active:scale-95 transition-all whitespace-nowrap cursor-pointer">STOP ENGINE</button>
             ) : (
-              <button onClick={startEngine} className="bg-emerald-600 text-white font-mono text-[11px] tracking-widest uppercase px-4 py-2 hover:bg-emerald-700 transition-colors">START ENGINE</button>
+              <button onClick={startEngine} className="flex-1 sm:flex-none text-center bg-emerald-600 text-white font-mono text-[10px] sm:text-[11px] tracking-wider uppercase px-2.5 sm:px-4 py-2 hover:bg-emerald-700 active:scale-95 transition-all whitespace-nowrap cursor-pointer">START ENGINE</button>
             )}
-            <button onClick={testEntry} className="bg-blue-600 text-white font-mono text-[11px] tracking-widest uppercase px-4 py-2 hover:bg-blue-700 transition-colors">TEST ENTRY</button>
-            <button onClick={stopAll} className="bg-red-600 text-white font-mono text-[11px] tracking-widest uppercase px-4 py-2 hover:bg-red-700 transition-colors">STOP ALL</button>
+            <button onClick={testEntry} className="flex-1 sm:flex-none text-center bg-blue-600 text-white font-mono text-[10px] sm:text-[11px] tracking-wider uppercase px-2.5 sm:px-4 py-2 hover:bg-blue-700 active:scale-95 transition-all whitespace-nowrap cursor-pointer">TEST ENTRY</button>
+            <button onClick={stopAll} className="flex-1 sm:flex-none text-center bg-red-600 text-white font-mono text-[10px] sm:text-[11px] tracking-wider uppercase px-2.5 sm:px-4 py-2 hover:bg-red-700 active:scale-95 transition-all whitespace-nowrap cursor-pointer">STOP ALL</button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-[1420px] mx-auto px-4 md:px-6 py-6 space-y-6">
+      <main className="max-w-[1420px] mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6">
         {/* Top Status Banner */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <div className="bg-white border border-[var(--line)] p-4">
             <div className="font-mono text-[10px] uppercase text-[var(--muted)] tracking-widest">Live Account Balances</div>
             <div className="font-display text-lg mt-1 space-y-1 max-h-20 overflow-y-auto">
@@ -324,8 +281,11 @@ export default function App() {
           </div>
         </div>
 
+        {/* TradingView Advanced Real-Time Chart */}
+        <TradingViewChart defaultSymbol="BINANCE:BTCUSDT" />
+
         {/* Live charts */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
           <ChartCard
             title="BTC price (this session)"
             subtitle="Updates every 5 seconds while this page is open"
@@ -364,6 +324,9 @@ export default function App() {
             </ResponsiveContainer>
           </ChartCard>
         </div>
+
+        {/* Google Gemini AI Market Analyst Card */}
+        <AIAnalystCard />
 
         {/* Open Position & Strategy Pipeline Details */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -536,7 +499,7 @@ export default function App() {
                   </FilterBar>
 
                   <div className="overflow-x-auto max-h-[360px] overflow-y-auto border border-[var(--line)]">
-                    <table className="w-full text-left">
+                    <table className="w-full text-left min-w-[580px]">
                       <thead className="bg-[var(--paper)] border-b border-[var(--line)] text-[var(--muted)] text-[10px] uppercase tracking-widest sticky top-0">
                         <tr><th className="p-2.5">#</th><th className="p-2.5">Side</th><th className="p-2.5">Entry Price</th><th className="p-2.5">Exit Price</th><th className="p-2.5">Exit Reason</th><th className="p-2.5">Net PnL</th></tr>
                       </thead>
@@ -598,8 +561,8 @@ export default function App() {
             ]} />
           </FilterBar>
 
-          <div className="overflow-x-auto max-h-[300px] overflow-y-auto font-mono text-xs">
-            <table className="w-full text-left">
+          <div className="overflow-x-auto max-h-[300px] overflow-y-auto font-mono text-xs border border-[var(--line)]">
+            <table className="w-full text-left min-w-[620px]">
               <thead className="bg-[var(--paper)] border-b border-[var(--line)] text-[var(--muted)] text-[10px] uppercase tracking-widest sticky top-0">
                 <tr>
                   <th className="p-2">Status</th>
