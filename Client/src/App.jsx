@@ -220,15 +220,15 @@ export default function App() {
               </div>
             </div>
             <div className="flex sm:hidden items-center gap-1.5 font-mono text-[10px]">
-              <span className={`w-2 h-2 rounded-full animate-pulse border ${wsOk ? 'bg-[#1A9E63]' : 'bg-red-500'}`} />
-              <span className="text-[var(--muted)]">{wsOk ? 'Live' : 'Offline'}</span>
+              <span className={`w-2 h-2 rounded-full animate-pulse border ${wsOk ? 'bg-[#1A9E63]' : 'bg-amber-500'}`} />
+              <span className="text-[var(--muted)]">{wsOk ? 'Live' : 'Connecting…'}</span>
             </div>
           </div>
 
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <div className="hidden sm:flex items-center gap-2 font-mono text-xs mr-2">
-              <span className={`w-2 h-2 rounded-full animate-pulse border ${wsOk ? 'bg-[#1A9E63]' : 'bg-red-500'}`} />
-              <span>{wsOk ? 'Connected' : 'Disconnected'}</span>
+              <span className={`w-2 h-2 rounded-full animate-pulse border ${wsOk ? 'bg-[#1A9E63]' : 'bg-amber-500'}`} />
+              <span>{wsOk ? 'Connected' : 'Waking Server…'}</span>
             </div>
             {status?.is_running ? (
               <button onClick={stopEngine} className="flex-1 sm:flex-none text-center bg-amber-600 text-white font-mono text-[10px] sm:text-[11px] tracking-wider uppercase px-2.5 sm:px-4 py-2 hover:bg-amber-700 active:scale-95 transition-all whitespace-nowrap cursor-pointer">STOP ENGINE</button>
