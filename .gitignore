@@ -1,9 +1,11 @@
 # Environment variables
 .env
-.env.*
+.env.local
+.env.*.local
 Server/.env
 Server/.env.backup
 !.env.example
+!Client/.env.production
 
 # Python
 __pycache__/

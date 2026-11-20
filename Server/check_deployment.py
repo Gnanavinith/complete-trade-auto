@@ -79,9 +79,19 @@ def run_checks():
     print("\n[4] GEMINI AI MARKET ANALYST:")
     try:
         analyst = GeminiMarketAnalyst()
-        res = analyst.analyze_and_broadcast(df_15m, notify=False)
+        res = analyst.analyze_market(
+            symbol=config.strategy.symbol,
+            price=mark_price,
+            regime=regime.name,
+            rsi=50.0,
+            adx=25.0,
+            ema_fast=mark_price,
+            ema_slow=mark_price,
+            trend_1h="BULLISH",
+            score=score
+        )
         print(f"   ✅ Gemini AI Generation Success!")
-        print(f"      - Bias:         {res.get('bias')} ({res.get('confidence_pct')}%)")
+        print(f"      - Bias:         {res.get('bias')} ({res.get('confidence')})")
         print(f"      - Summary:      {res.get('summary')[:90]}...")
     except Exception as e:
         print(f"   ❌ Gemini AI Error: {e}")
