@@ -13,7 +13,7 @@ jobs:
       - name: Ping Backend Health Endpoint
         run: |
           echo "Pinging Complete Trade Auto Render Backend..."
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "https://complete-trade-auto-vinith.onrender.com/health")
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "https://complete-trade-auto.onrender.com/status")
           echo "Render responded with HTTP Status: $HTTP_STATUS"
           if [ "$HTTP_STATUS" -eq 200 ]; then
             echo "Server is awake and healthy!"

@@ -5,7 +5,7 @@
 
 [build.environment]
   NODE_VERSION = "20"
-  VITE_API_BASE = "https://complete-trade-auto-vinith.onrender.com"
+  VITE_API_BASE = "https://complete-trade-auto.onrender.com"
 
 [[redirects]]
   from = "/*"

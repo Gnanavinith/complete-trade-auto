@@ -6,7 +6,7 @@ import time
 import requests
 from datetime import datetime
 
-URL = "https://complete-trade-auto-vinith.onrender.com/health"
+URL = "https://complete-trade-auto.onrender.com/status"
 INTERVAL_SECONDS = 600  # 10 minutes (Render spins down after 15 minutes)
 
 def ping():
