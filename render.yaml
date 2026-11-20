@@ -4,8 +4,9 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: pip install -r Server/requirements.txt
-    startCommand: uvicorn Server.app.main:app --host 0.0.0.0 --port $PORT
+    rootDir: Server
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DELTA_ENV
         value: production
